@@ -142,6 +142,9 @@ def forkingTool():
             _forkLifeMain(forkList, forksToSpawn)
             # When we exit _forkLifeMain, we will be a new fork.
             isMain = False
+            # Make sure we do NOT use the half-life trick to stagger 
+            # lifetimes
+            forkList = []
             
     if not isMain:
         _forkInit()
