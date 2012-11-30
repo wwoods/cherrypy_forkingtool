@@ -4,8 +4,10 @@ import cherrypy
 import cherrypy.process.plugins
 import cherrypy.process.servers
 import cherrypy.wsgiserver
+import multiprocessing
 import os
 import signal
+import socket
 import threading
 import time
 
@@ -44,8 +46,6 @@ def forkingTool():
         # No forking necessary!
         return True
 
-    import multiprocessing
-    import socket
     if threading.activeCount() != 1:
         raise Exception("Cannot fork once threads have been spawned!  {0}"
                 .format(threading.enumerate()))
@@ -187,6 +187,20 @@ class _ForkLifeChecker(cherrypy.process.plugins.Monitor):
             self.hasDied = True
             self.addForkQueue.put('fork')
             cherrypy.engine.exit()
+            
+            
+def _checkAlive(pid):
+    """Returns True if pid is alive; False otherwise.  Needed because we use
+    SIG_IGN to ignore child deaths.
+    """
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError, e:
+        if e.errno != 3:
+            # 3 -- No such process
+            raise
+    return False
 
 
 def _forkInit():
@@ -229,12 +243,7 @@ def _forkLifeMain(forkList, addForkQueue):
             
             # Clean out forkList
             for pid in forkList[:]:
-                try:
-                    os.kill(pid, 0)
-                except OSError, e:
-                    if e.errno != 3:
-                        # 3 -- No such process
-                        raise
+                if not _checkAlive(pid):
                     forkList.remove(pid)
             
     except:
@@ -247,25 +256,15 @@ def _killForks(forkList):
     """For the main fork, we want to kill all children when the main fork
     dies.  This lets the forking tool work with autoreloader, for instance.
     """
-    while forkList:
-        pid = forkList.pop()
+    for pid in forkList:
         try:
             os.kill(pid, signal.SIGTERM)
         except OSError, e:
             # 3 means No such process
             if e.errno != 3:
                 raise
-        else:
-            # Stop zombies before the apocalypse - for every process we kill,
-            # wait on one.
-            try:
-                (pidWaited, _status) = os.wait()
-                if pidWaited == pid:
-                    break
-            except OSError, e:
-                # 10 means No child processes
-                if e.errno != 10:
-                    raise
-                else:
-                    # No child processes, our fork must have died
-                    break
+    # Wait on our children to actually die, so that we don't look like we've
+    # exited but are still using the port (matters for people using pidfiles).
+    for pid in forkList:
+        while _checkAlive(pid):
+            time.sleep(0.1)
