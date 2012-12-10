@@ -245,6 +245,8 @@ def _forkLifeMain(forkList, addForkQueue):
             for pid in forkList[:]:
                 if not _checkAlive(pid):
                     forkList.remove(pid)
+                    # And restart a new one when one dies
+                    addForkQueue.put('fork')
             
     except:
         # If there was any error, kill all forks and exit
