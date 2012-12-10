@@ -5,6 +5,7 @@ import cherrypy.process.plugins
 import cherrypy.process.servers
 import cherrypy.wsgiserver
 import multiprocessing
+from multiprocessing.queues import Empty
 import os
 import signal
 import socket
@@ -231,15 +232,21 @@ def _forkLifeMain(forkList, addForkQueue):
         signal.signal(signal.SIGCHLD, signal.SIG_IGN)
         
         while True:
-            addForkQueue.get()
-            pid = os.fork()
-            if pid == 0:
-                # We're the new child!  Hooray!  Unset our signal handler as
-                # cherrypy will install its own.
-                signal.signal(signal.SIGTERM, signal.SIG_DFL)
-                signal.signal(signal.SIGCHLD, signal.SIG_DFL)
-                return
-            forkList.append(pid)
+            try:
+                addForkQueue.get(timeout = 15)
+            except Empty:
+                # Shouldn't make a new fork, but do check on the ones that 
+                # are alive.
+                pass
+            else:
+                pid = os.fork()
+                if pid == 0:
+                    # We're the new child!  Hooray!  Unset our signal handler as
+                    # cherrypy will install its own.
+                    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+                    signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+                    return
+                forkList.append(pid)
             
             # Clean out forkList
             for pid in forkList[:]:
