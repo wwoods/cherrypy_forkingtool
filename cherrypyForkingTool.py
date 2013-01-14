@@ -186,7 +186,9 @@ class _ForkLifeChecker(cherrypy.process.plugins.Monitor):
             
         if shouldDie and not self.hasDied:
             self.hasDied = True
-            self.addForkQueue.put('fork')
+            # Start a replacement for us before our process exits, so that there
+            # is less of a functional gap
+            self.addForkQueue.put(os.getpid())
             cherrypy.engine.exit()
             
             
@@ -220,6 +222,8 @@ def _forkLifeMain(forkList, addForkQueue):
     """We're the golden model of a fork - just sit until we get permission to
     spawn a new fork, at which point return.
     """
+    needsReplacement = set(forkList)
+
     try:
         def onKillSignal(sig, frame):
             # As the main fork, we do not reap cherrypy's SIGTERM processing.
@@ -233,28 +237,36 @@ def _forkLifeMain(forkList, addForkQueue):
         
         while True:
             try:
-                addForkQueue.get(timeout = 15)
+                oldPid = addForkQueue.get(timeout = 15)
             except Empty:
-                # Shouldn't make a new fork, but do check on the ones that 
+                # Shouldn't make a new fork, but do check on the ones that
                 # are alive.
                 pass
             else:
-                pid = os.fork()
-                if pid == 0:
-                    # We're the new child!  Hooray!  Unset our signal handler as
-                    # cherrypy will install its own.
-                    signal.signal(signal.SIGTERM, signal.SIG_DFL)
-                    signal.signal(signal.SIGCHLD, signal.SIG_DFL)
-                    return
-                forkList.append(pid)
-            
+                # Before just starting a new process, make sure this pid is
+                # still in our needsReplacement set.  If it's not, we've
+                # already spawned a replacement child, and spawning another
+                # would create too many forks.
+                if oldPid in needsReplacement:
+                    needsReplacement.remove(oldPid)
+                    pid = os.fork()
+                    if pid == 0:
+                        # We're the new child!  Hooray!  Unset our signal
+                        # handler as cherrypy will install its own.
+                        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+                        signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+                        return
+                    forkList.append(pid)
+                    # Add the new pid so it will get replaced
+                    needsReplacement.add(pid)
+
             # Clean out forkList
             for pid in forkList[:]:
                 if not _checkAlive(pid):
                     forkList.remove(pid)
                     # And restart a new one when one dies
-                    addForkQueue.put('fork')
-            
+                    addForkQueue.put(pid)
+
     except:
         # If there was any error, kill all forks and exit
         _killForks(forkList)
