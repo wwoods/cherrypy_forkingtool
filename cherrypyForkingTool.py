@@ -139,6 +139,11 @@ def forkingTool():
             atexit.register(_killForks, forkList)
             # For the autoreloader, also kill forks on engine stop
             cherrypy.engine.subscribe('stop', lambda: _killForks(forkList))
+
+            # We're the main thread and we're not calling _forkLifeMain, so
+            # manually set the SIGCHLD flag to ignore so that we don't have
+            # to wait on children for them to be reaped (no zombies)
+            signal.signal(signal.SIGCHLD, signal.SIG_IGN)
         else:
             _forkLifeMain(forkList, forksToSpawn)
             # When we exit _forkLifeMain, we will be a new fork.
@@ -237,7 +242,7 @@ def _forkLifeMain(forkList, addForkQueue):
         
         while True:
             try:
-                oldPid = addForkQueue.get(timeout = 15)
+                oldPid = addForkQueue.get(timeout = 5)
             except Empty:
                 # Shouldn't make a new fork, but do check on the ones that
                 # are alive.
